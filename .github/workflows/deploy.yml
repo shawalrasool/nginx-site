@@ -1,0 +1,60 @@
+name: Deploy Nginx Docker Website
+
+on:
+  push:
+    branches:
+      - main
+
+jobs:
+  build_push:
+    runs-on: ubuntu-latest
+    outputs:
+      image_tag: ${{ steps.tag.outputs.image_tag }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Generate image tag
+        id: tag
+        run: |
+          TAG="nginx-${GITHUB_RUN_NUMBER}"
+          echo "image_tag=$TAG" >> $GITHUB_OUTPUT
+
+      - name: Configure AWS
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ secrets.AWS_REGION }}
+
+      - name: Login to ECR
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Build Docker image
+        run: |
+          docker build -t ${{ secrets.ECR_REPO }}:${{ steps.tag.outputs.image_tag }} .
+
+      - name: Push Docker image
+        run: |
+          docker push ${{ secrets.ECR_REPO }}:${{ steps.tag.outputs.image_tag }}
+
+  deploy:
+    needs: build_push
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Deploy on EC2
+        uses: appleboy/ssh-action@v1.0.0
+        with:
+          host: ${{ secrets.EC2_HOST }}
+          username: ${{ secrets.EC2_USER }}
+          key: ${{ secrets.EC2_SSH_KEY }}
+          script: |
+            export IMAGE_TAG="${{ needs.build_push.outputs.image_tag }}"
+            export ECR_REPO="${{ secrets.ECR_REPO }}"
+
+            aws ecr get-login-password --region ${{ secrets.AWS_REGION }} | docker login --username AWS --password-stdin $ECR_REPO
+
+            cd nginx-test
+            docker compose down
+            docker compose up -d
